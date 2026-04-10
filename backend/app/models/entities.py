@@ -12,7 +12,7 @@ class IpReclaimCandidate(Base):
     ip_address = Column(String(45), nullable=False)
     owner_team = Column(String(100), nullable=False)
     owner_email = Column(String(255), nullable=False)
-    candidate_status = Column(String(20), nullable=False, default="READY")
+    status = Column(String(20), nullable=False, default="READY")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

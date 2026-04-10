@@ -11,7 +11,7 @@ load_dotenv()
 # 예: mysql+pymysql://root:password@localhost:3306/ipam_db
 # For PoC, fallback to SQLite if MySQL connection fails or is not preferred for local testing
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
-if not SQLALCHEMY_DATABASE_URL or "mysql" in SQLALCHEMY_DATABASE_URL:
+if not SQLALCHEMY_DATABASE_URL or "mysql" not in SQLALCHEMY_DATABASE_URL:
     # Use SQLite for PoC if MySQL is not available or if it's the default in .env but failing
     SQLALCHEMY_DATABASE_URL = "sqlite:///./ipam_poc.db"
 

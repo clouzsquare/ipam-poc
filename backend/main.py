@@ -1,25 +1,25 @@
 import os
-from typing import List, Optional
-from app.api.v1.chat import router as chat_router
-from app.llm.agent import IPAMAgent
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from pydantic import BaseModel
-import smtplib
-from email.mime.text import MIMEText
-from dotenv import load_dotenv
-from app.core.database import SessionLocal
-from app.models.entities import IpReclaimCandidate
-from app.models.enums import ReclaimStatus, DetailStatus
-from backend.app.client.ntoss_client import NtossClient
+import uvicorn
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# 💡 이제 여기서 특정 Agent를 직접 import할 필요가 없습니다.
+# 모든 로직은 chat_router 내부의 master_graph가 처리합니다.
+from app.api.v1.chat import router as chat_router
+from app.client.ntoss_client import NtossClient
 
 load_dotenv()
 
-app = FastAPI(title="IPAM AI Agent PoC")
-agent = IPAMAgent()
+app = FastAPI(
+    title="IPAM AI Agent PoC",
+    description="LG CNS NW AX IPAM 프로젝트 - 멀티 에이전트 오케스트레이션 시스템"
+)
+
+# NTOSS 클라이언트 공통 사용을 위해 인스턴스화 (필요 시)
 ntoss = NtossClient()
 
-# CORS 설정
+# ✅ CORS 설정: 프론트엔드(React)와의 통신을 위해 유지
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,15 +28,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ✅ API 라우터 등록
+# /api/v1/chat 으로 들어오는 요청은 이제 Master Router가 처리합니다.
 app.include_router(chat_router, prefix="/api/v1", tags=["Chat"])
 
-class ChatRequest(BaseModel):
-    history: List[dict]
-    max_per_team: Optional[int] = 4
-    selected_ips: Optional[List[dict]] = []
+@app.get("/")
+async def root():
+    return {"message": "IPAM AI Agent PoC Server is running."}
 
+# 💡 Gmail 발송 유틸리티 (필요 시 별도 mail_service.py로 분리 추천)
 def send_gmail(subject: str, body: str, to_email: str):
-    """Gmail 발송 유틸리티"""
+    import smtplib
+    from email.mime.text import MIMEText
+    
     gmail_user = os.getenv("GMAIL_USER")
     gmail_password = os.getenv("GMAIL_APP_PASSWORD")
     
@@ -58,5 +62,5 @@ def send_gmail(subject: str, body: str, to_email: str):
         print(f"[MAIL ERROR] {str(e)}")
 
 if __name__ == "__main__":
-    import uvicorn
+    # 로컬 개발 시 reload=True 옵션으로 코드 수정 시 자동 반영
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
