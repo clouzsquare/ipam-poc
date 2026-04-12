@@ -8,6 +8,7 @@ class ReclaimStatus(str, Enum):
 class DetailStatus(str, Enum):
     READY = "READY"
     IN_PROGRESS = "IN-PROGRESS"
+    REJECTED = "REJECTED"
     DHCP_REQUESTED = "DHCP_REQUESTED"
     DHCP_SUCCESS = "DHCP_SUCCESS"
     DHCP_FAILED = "DHCP_FAILED"

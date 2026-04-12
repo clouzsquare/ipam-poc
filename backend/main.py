@@ -4,10 +4,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# 💡 이제 여기서 특정 Agent를 직접 import할 필요가 없습니다.
-# 모든 로직은 chat_router 내부의 master_graph가 처리합니다.
 from app.api.v1.chat import router as chat_router
 from app.client.ntoss_client import NtossClient
+import logging
+
+# 로그
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("LOGGER")
 
 load_dotenv()
 
@@ -19,7 +26,7 @@ app = FastAPI(
 # NTOSS 클라이언트 공통 사용을 위해 인스턴스화 (필요 시)
 ntoss = NtossClient()
 
-# ✅ CORS 설정: 프론트엔드(React)와의 통신을 위해 유지
+# CORS 설정: 프론트엔드(React)와의 통신을 위해 유지
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ API 라우터 등록
+# API 라우터 등록
 # /api/v1/chat 으로 들어오는 요청은 이제 Master Router가 처리합니다.
 app.include_router(chat_router, prefix="/api/v1", tags=["Chat"])
 
@@ -36,7 +43,7 @@ app.include_router(chat_router, prefix="/api/v1", tags=["Chat"])
 async def root():
     return {"message": "IPAM AI Agent PoC Server is running."}
 
-# 💡 Gmail 발송 유틸리티 (필요 시 별도 mail_service.py로 분리 추천)
+# Gmail 발송 유틸리티 (필요 시 별도 mail_service.py로 분리 추천)
 def send_gmail(subject: str, body: str, to_email: str):
     import smtplib
     from email.mime.text import MIMEText

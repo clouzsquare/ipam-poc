@@ -13,23 +13,35 @@ class MasterOrchestrator:
         )
     def route_decision(self, state: AgentState):
         """질문 내용을 보고 도메인을 분류합니다."""
-        # 💡 마지막 메시지 추출
+        # 마지막 메시지 추출
         last_msg = state["messages"][-1]
         
-        # 💡 [수정] 객체(.content)와 딕셔너리(['content']) 모두 대응 가능하도록 처리
+        # 객체(.content)와 딕셔너리(['content']) 모두 대응 가능하도록 처리
         if hasattr(last_msg, 'content'):
             last_msg_text = last_msg.content
         else:
             last_msg_text = last_msg.get('content', '')
         
         prompt = f"""
-        사용자의 질문을 분석하여 어떤 전문가에게 연결할지 결정하세요.
-        질문: "{last_msg_text}"
+        당신은 IPAM 시스템의 AI Assistant 입니다. 사용자의 요청을 분석하여 적절한 에이전트에게 배분하세요.
 
-        - CANDIDATE: IP 회수 대상 후보를 추출하거나 선정하는 것과 관련된 질문
-        - RECLAIM: 이미 뽑힌 목록을 확정(진행)하거나, 현재 진행 중인 작업 현황 조회
-        - CHAT: 단순 인사 또는 기타
+        1. CANDIDATE (전략적 추출):
+           - 역할: 3~4개월 단위의 장기 회수 대상 IP를 DB에서 선별하고 추출하는 작업.
+           - 키워드: "회수 대상 뽑아줘", "새로운 후보 리스트 생성", "장기 회수 계획"
 
+        2. RECLAIM (일단위 운영 및 실행):
+           - 역할: 추출된 후보를 바탕으로 '오늘' 실제로 수행하는 모든 액션.
+           - 주요 업무: 
+             ① 금일 작업 대상 확정 및 추출 
+             ② 담당자 검토 요청 메일 발송 (In-Progress 전이)
+             ③ NTOSS 연동을 통한 실제 회수 실행
+             ④ 회수 중 발생한 장애(DHCP/Device 에러) 대응 및 재시도
+             ⑤ 실시간 진행 현황 및 통계 조회
+           - 키워드: "오늘 작업 시작", "메일 보내줘", "확정해", "진행 현황 어때", "10.x.x.x는 빼줘", "실패한 거 왜이래?"
+
+        3. CHAT: 단순 인사, 시스템 사용법 문의 등
+
+        요청: "{last_msg}"
         오직 한 단어(CANDIDATE, RECLAIM, CHAT)로만 대답하세요.
         """
         res = self.llm.invoke(prompt)

@@ -12,7 +12,7 @@ class ChatRequest(BaseModel):
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
-    # 💡 Multi-Agent 환경에 맞는 초기 상태 구성
+    # Multi-Agent 환경에 맞는 초기 상태 구성
     initial_state = {
         "messages": req.history, 
         "domain": "",         # 라우터가 판단할 영역 (candidate/reclaim)
@@ -22,7 +22,7 @@ async def chat(req: ChatRequest):
         "max_per_team": req.max_per_team
     }
     
-    # 💡 이제 특정 에이전트가 아닌 '마스터 그래프'를 실행합니다.
+    # 이제 특정 에이전트가 아닌 '마스터 그래프'를 실행합니다.
     result = master_graph.invoke(initial_state)
     
     # 마지막 응답 메시지 추출
