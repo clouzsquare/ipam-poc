@@ -65,6 +65,18 @@ class NtossClient:
         }
 
     @log_ntoss_call
+    def get_apartment_info_by_nw_id(self, nw_id: str) -> dict:
+        """NW ID로 아파트 정보 조회 API (Mock)"""
+        suffix = str(nw_id)[-1] if nw_id else ""
+        mapping = {"1": "행복기숙사", "2": "시티호텔", "3": "중앙숙박업소"}
+        name = mapping.get(suffix, "일반주거단지")
+        return {
+            "nw_id": nw_id,
+            "apartment_name": name,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    @log_ntoss_call
     def reclaim_dhcp(self, task_id: str, nw_id: str, ip: str) -> dict:
         """오전 11시: DHCP 서버 IP 회수 API (10% 확률 실패 로직 포함)"""
         is_success = random.random() > 0.1 

@@ -5,3 +5,5 @@ langgraph
 sqlalchemy
 pymysql
 python-dotenv
+openpyxl
+python-multipart
