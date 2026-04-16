@@ -1,6 +1,7 @@
 import os
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from .shared_state import AgentState
 from .reclaim_agent import reclaim_graph     # 동혁님 에이전트
 from .candidate_agent import candidate_graph # 우현님 에이전트
@@ -21,6 +22,18 @@ class MasterOrchestrator:
             last_msg_text = last_msg.content
         else:
             last_msg_text = last_msg.get('content', '')
+
+        # 전체 대화 이력을 컨텍스트로 구성
+        transcript_lines = []
+        for message in state.get("messages", []):
+            if hasattr(message, "content"):
+                content = message.content
+                role = getattr(message, "type", "assistant")
+            else:
+                content = message.get("content", "")
+                role = message.get("role", "assistant")
+            transcript_lines.append(f"{str(role).upper()}: {str(content)}")
+        transcript = "\n".join(transcript_lines)
         
         prompt = f"""
         당신은 IPAM 시스템의 AI Assistant 입니다. 사용자의 요청을 분석하여 적절한 에이전트에게 배분하세요.
@@ -45,11 +58,22 @@ class MasterOrchestrator:
 
         3. CHAT: 단순 인사, 시스템 사용법 문의 등
 
-        요청: "{last_msg}"
-        오직 한 단어(CANDIDATE, RECLAIM, CHAT)로만 대답하세요.
+        [중요 라우팅 원칙]
+        - 마지막 사용자 요청이 "메일 발송/보내줘/확정"처럼 모호하면, 반드시 직전 대화 흐름을 우선 판단하세요.
+        - 직전 흐름이 "후보 추출/후보 확정/엑셀 업로드/후보 목록"이면 CANDIDATE로 분류하세요.
+        - 직전 흐름이 "오늘 작업/NTOSS/IN-PROGRESS/장애 처리/운영 현황"이면 RECLAIM으로 분류하세요.
+        - 즉, 모호한 요청은 단어 하나로 분류하지 말고 현재 진행 중인 워크플로우를 따라가세요.
+
+        [대화 이력]
+        {transcript}
+
+        [마지막 사용자 요청]
+        {last_msg_text}
+
+        오직 한 단어(CANDIDATE, RECLAIM, CHAT)로만 대답하세요. 설명 금지.
         """
-        res = self.llm.invoke(prompt)
-        domain_raw = res.content.strip().upper()
+        res = self.llm.invoke([SystemMessage(content=prompt), HumanMessage(content=last_msg_text)])
+        domain_raw = str(res.content).strip().upper()
         
         if "RECLAIM" in domain_raw: domain = "reclaim"
         elif "CANDIDATE" in domain_raw: domain = "candidate"
