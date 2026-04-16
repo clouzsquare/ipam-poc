@@ -2,7 +2,7 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from io import BytesIO
-from typing import Dict, List, Union
+from typing import Annotated, Dict, List, TypedDict, Union
 import json
 import operator
 import os
@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session
 from app.client.ntoss_client import NtossClient
 from app.core.database import SessionLocal
 from app.repositories.candidate.candidate_repository import CandidateRepository
-from .shared_state import AgentState
+
+
+class AgentState(TypedDict):
+    messages: Annotated[List[Union[dict, BaseMessage]], operator.add]
+    intent: str
+    query_plan: dict
+    selected_ips: List[dict]
 
 
 class CandidateAgent:
@@ -56,33 +62,30 @@ class CandidateAgent:
 
     def infer_upload_mode_from_history(self, history: List[dict]) -> str:
         """채팅 컨텍스트를 보고 업로드 목적(extract/finalize)을 판별합니다."""
-        converted = self._convert_to_messages(history or [])
-        if not converted:
+        print("\n🚀 [FUNC: infer_upload_mode_from_history(Candidate)]")
+        if not history:
+            print("ℹ️ history 없음 -> mode=extract")
             return "extract"
-
-        prompt = """
-        당신은 엑셀파일 업로드 목적 판별기입니다.
-        최근 대화 맥락을 바탕으로 아래 중 무엇인지 판단하세요.
-        - EXTRACT: "추출", "목록 추출", "후보 추출" 등 IP회수 후보 목록 추출/미리보기 목적의 엑셀 업로드
-        - FINALIZE: "확정", "최종", "반영" 등 IP회수 후보 목록 확정 및 DB 반영 목적의 엑셀 업로드
-
-        출력은 EXTRACT 또는 FINALIZE 한 단어만 반환하세요.
-        """
         try:
-            res = self.llm.invoke([SystemMessage(content=prompt)] + converted[-6:])
-            text = str(res.content).upper()
-            if "FINALIZE" in text:
+            # 채팅 의도 분류기와 동일한 기준을 사용해 업로드 모드 불일치 방지
+            inferred = self.intent_analyzer(
+                {
+                    "messages": history,
+                    "intent": "",
+                    "query_plan": {},
+                    "selected_ips": [],
+                }
+            )
+            print(f"🧭 inferred intent for upload mode: {inferred.get('intent')}")
+            if str(inferred.get("intent", "CHAT")).upper() == "FINALIZE":
+                print("✅ upload mode=finalize")
                 return "finalize"
+            print("✅ upload mode=extract")
             return "extract"
-        except Exception:
-            # LLM 실패 시 보수적 기본값
-            last_user = ""
-            for m in reversed(history or []):
-                if m.get("role") == "user":
-                    last_user = str(m.get("content", ""))
-                    break
-            if any(k in last_user for k in ["확정", "최종", "DB 반영"]):
-                return "finalize"
+        except Exception as e:
+            # LLM 실패 시 기본값
+            print(f"❌ infer_upload_mode_from_history error: {e}")
+            print("↪ fallback mode=extract")
             return "extract"
 
     @staticmethod
@@ -90,7 +93,8 @@ class CandidateAgent:
         try:
             cleaned = re.sub(r"```json|```", "", raw_text).strip()
             return json.loads(cleaned)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ _extract_json fallback (reason: {e})")
             return fallback
 
     def intent_analyzer(self, state: AgentState):
@@ -98,19 +102,25 @@ class CandidateAgent:
         print("\n🚀 [NODE: intent_analyzer(Candidate)]")
         history = self._convert_to_messages(state["messages"])
         system_prompt = """
-        당신은 IP 회수 후보 추출 에이전트 의도 분류기입니다.
-        - START: "후보 목록 추출", "후보 뽑아줘", "추출해줘" 등 시점 기준으로 후보 추출을 새롭게 시작할 때
-        - PROVIDE: "업로드 완료", "파일 넣었어", "내용 입력했어" 등 엑셀 파일을 업로드했을 때
-        - CONFIRM: "예", "진행", "검토 진행", "메일 발송" 등 인프라담당자 검토 요청 메일을 발송할 때
-        - FINALIZE: "확정", "IP회수 후보 확정", "후보 확정", "최종 확정" 등 회수 후보를 확정할 때
-        - REJECT: "아니오", "취소", "보류", "다시" 등 회수 후보를 다시 추출할 때
-        - STATUS: "현황", "목록", "조회" 등 현재 후보 목록을 조회할 때
+        당신은 IP 회수 후보(CANDIDATE) 시나리오 의도 분류기입니다.
+        아래 5개 intent 중 하나로만 분류하세요.
+        - START: "IP회수 후보 추출", "후보 추출", "후보 뽑아줘" 등 후보 추출 시작
+        - CONFIRM: "메일 발송", "검토 메일 보내", "담당자 검토 요청" 등 검토 요청 메일 발송
+        - REJECT: "재추출", "다시 추출", "아니오", "수정할게" 등 재추출/재작업
+        - FINALIZE: "IP회수 후보 확정", "후보 확정", "최종 반영", "DB 반영" 등 확정 처리
         - CHAT: 그 외
-        반드시 START, PROVIDE, CONFIRM, FINALIZE, REJECT, STATUS, CHAT 중 하나만 답변하세요.
+
+        출력 규칙:
+        - 반드시 아래 라벨 중 하나만 한 단어로 출력하세요.
+          START / CONFIRM / REJECT / FINALIZE / CHAT
+        - 설명, JSON, 코드블록을 절대 포함하지 마세요.
         """
         res = self.llm.invoke([SystemMessage(content=system_prompt)] + history)
         raw = str(res.content).upper()
-        intent = next((x for x in ["START", "PROVIDE", "CONFIRM", "FINALIZE", "REJECT", "STATUS"] if x in raw), "CHAT")
+        intent = next(
+            (x for x in ["FINALIZE", "CONFIRM", "REJECT", "START", "CHAT"] if x in raw),
+            "CHAT",
+        )
         print(f"🎯 분석된 Intent: {intent}")
         return {"intent": intent}
 
@@ -118,64 +128,21 @@ class CandidateAgent:
         """[2] 액션 계획 수립: intent를 실행 액션으로 변환"""
         print("\n🚀 [NODE: action_planner(Candidate)]")
         intent = state.get("intent", "CHAT")
-        history = self._convert_to_messages(state["messages"])
-        prompt = f"""
-        당신은 후보 추출 정책 설계자입니다. intent={intent}에 맞춰 JSON만 출력하세요.
-
-        규칙:
-        - START: 업로드 요청 안내
-        - PROVIDE: 최신 후보 미리보기 조회 및 검토 요청
-        - CONFIRM: 메일 발송 실행
-        - FINALIZE: 확정용 엑셀 업로드 안내
-        - REJECT: 추가 후보 요청 유도
-        - STATUS: 최근 후보 목록 조회
-        - CHAT: 빈 계획.
-
-        JSON 스키마:
-        {{
-          "action": "GUIDE_UPLOAD|FETCH_CANDIDATES|SEND_REVIEW_MAIL|GUIDE_FINALIZE_UPLOAD|ASK_MORE_TARGET|FETCH_STATUS|CHAT"
-        }}
-        """
-        res = self.llm.invoke([SystemMessage(content=prompt)] + history)
-        default_plan = {"action": "CHAT"}
-        plan = self._extract_json(str(res.content), default_plan)
-        action = str(plan.get("action", "CHAT")).upper()
         intent_to_action = {
             "START": "GUIDE_UPLOAD",
-            "PROVIDE": "FETCH_CANDIDATES",
             "CONFIRM": "SEND_REVIEW_MAIL",
             "FINALIZE": "GUIDE_FINALIZE_UPLOAD",
             "REJECT": "ASK_MORE_TARGET",
-            "STATUS": "FETCH_STATUS",
             "CHAT": "CHAT",
         }
-        if action not in {"GUIDE_UPLOAD", "FETCH_CANDIDATES", "SEND_REVIEW_MAIL", "GUIDE_FINALIZE_UPLOAD", "ASK_MORE_TARGET", "FETCH_STATUS", "CHAT"}:
-            action = intent_to_action.get(intent, "CHAT")
+        action = intent_to_action.get(intent, "CHAT")
         print(f"🎯 분석된 action: {action}")
         return {"query_plan": {"action": action}}
 
     def data_fetcher(self, state: AgentState):
-        """[3] 데이터 조회: 액션에 필요한 후보 데이터만 수집"""
+        """[3] (단순화) 현재 시나리오에서는 별도 DB 조회 불필요"""
         print("\n🚀 [NODE: data_fetcher(Candidate)]")
-        plan = state.get("query_plan", {})
-        action = plan.get("action")
-        if action not in {"FETCH_STATUS", "FETCH_CANDIDATES"}:
-            return {"selected_candidates": [], "selected_ips": []}
-
-        if action == "FETCH_CANDIDATES":
-            selected = state.get("selected_ips", [])
-            return {"selected_candidates": selected, "selected_ips": selected}
-
-        db = SessionLocal()
-        try:
-            repo = CandidateRepository(db)
-            selected_candidates = repo.get_all_candidates_latest()
-            return {
-                "selected_candidates": selected_candidates,
-                "selected_ips": selected_candidates,
-            }
-        finally:
-            db.close()
+        return {}
 
     @staticmethod
     def _load_team_email_map() -> Dict[str, str]:
@@ -225,7 +192,9 @@ class CandidateAgent:
         return bio.getvalue()
 
     def _send_review_mails(self, selected_ips: List[dict]) -> Dict:
+        print("\n🚀 [FUNC: _send_review_mails(Candidate)]")
         if not selected_ips:
+            print("ℹ️ selected_ips 없음 -> 메일 발송 0건")
             return {"sent_count": 0, "failed": []}
 
         team_email_map = self._load_team_email_map()
@@ -237,6 +206,7 @@ class CandidateAgent:
                 if item.get("owner_team") or item.get("owner_email")
             }
         )
+        print(f"📨 recipients={len(recipients)}")
         gmail_user = os.getenv("GMAIL_USER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
         subject = "[IPAM] IP 회수 후보 검토 요청"
@@ -255,6 +225,7 @@ class CandidateAgent:
 
         if not gmail_user or not gmail_password:
             # PoC 모드: 실제 SMTP 미설정 시 mock 성공 처리
+            print("ℹ️ SMTP 설정 없음 -> mock success 처리")
             return {"sent_count": len(recipients), "failed": []}
 
         xlsx_bytes = self._build_review_excel_bytes(selected_ips)
@@ -279,9 +250,12 @@ class CandidateAgent:
                     smtp.send_message(msg)
             except Exception:
                 failed.append(to_email)
+        print(f"✅ mail sent={len(recipients) - len(failed)}, failed={len(failed)}")
         return {"sent_count": len(recipients) - len(failed), "failed": failed}
 
     def _insert_confirmed_candidates(self, db: Session, selected_ips: List[dict], extraction_batch_id: str = "") -> Dict:
+        print("\n🚀 [FUNC: _insert_confirmed_candidates(Candidate)]")
+        print(f"📥 input selected_ips={len(selected_ips)}, batch_id={extraction_batch_id}")
         if not selected_ips:
             return {"inserted_count": 0, "skipped_count": 0}
         normalized = []
@@ -291,38 +265,24 @@ class CandidateAgent:
             copied["owner_email"] = str(copied.get("owner_email", "")).strip() or fallback_email
             normalized.append(copied)
         repo = CandidateRepository(db)
-        return repo.insert_confirmed_candidates(normalized, extraction_batch_id)
+        result = repo.insert_confirmed_candidates(normalized, extraction_batch_id)
+        print(f"✅ insert result: {result}")
+        return result
 
     def responder(self, state: AgentState):
         print("🚀 [NODE: responder(Candidate)]")
         action = state.get("query_plan", {}).get("action", "CHAT")
+        print(f"🧭 responder action={action}")
         if action == "GUIDE_UPLOAD":
             msg = (
-                "IP회수 후보 목록 추출을 시작합니다. 먼저 NW ID별 IP대역 사용률 엑셀파일이 필요합니다.\n"
-                "엑셀 업로드 API로 파일을 전달해 주세요.\n"
-                "- POST /api/v1/candidate/extract\n"
-                "- 필수: file(.xlsx)\n"
-                "- 선택: usage_threshold, extraction_batch_id, default_owner_email\n"
-                "업로드가 완료되면 후보 목록을 바로 확인할 수 있습니다."
+                "IP회수 후보 목록 추출을 시작합니다. "
+                "NW ID별 IP대역 사용률 엑셀파일을 업로드해 주세요."
             )
             return {"messages": [AIMessage(content=msg)]}
 
-        if action in {"FETCH_STATUS", "FETCH_CANDIDATES"}:
-            data = state.get("selected_candidates", []) or state.get("selected_ips", [])
-            if not data:
-                return {"messages": [AIMessage(content="업로드된 후보 목록이 없습니다. 엑셀 파일을 업로드해 주세요.")]}
-            summarize_prompt = (
-                "당신은 IPAM AI Assistant입니다.\n"
-                "아래 후보 목록을 간단 요약하고, 마지막 줄에 "
-                "'후보 확인 후 \"메일 발송\"이라고 입력하면 검토 메일을 인프라 담당자에게 발송하고, "
-                "수정이 필요하다면 수정할 내용을 입력해주세요'를 반드시 포함하세요.\n"
-                f"데이터: {data}"
-            )
-            res = self.llm.invoke([HumanMessage(content=summarize_prompt)])
-            return {"messages": [AIMessage(content=str(res.content))], "selected_ips": data}
-
         if action == "SEND_REVIEW_MAIL":
             selected_ips = state.get("selected_ips", [])
+            print(f"📦 selected_ips for mail={len(selected_ips)}")
             if not selected_ips:
                 return {"messages": [AIMessage(content="검토 메일을 보낼 후보 목록이 없습니다. 먼저 엑셀 업로드를 진행해 주세요.")]}
             mail_result = self._send_review_mails(selected_ips)
@@ -335,9 +295,8 @@ class CandidateAgent:
                 "messages": [
                     AIMessage(
                         content=(
-                            "IP회수 후보 목록 확정을 진행합니다. 인프라 담당자 검토가 반영된 엑셀파일을 업로드해 주세요.\n"
-                            "- POST /api/v1/candidate/finalize\n"
-                            "- 해당 업로드는 즉시 DB에 INSERT 됩니다."
+                            "IP회수 후보 목록 확정을 진행합니다. "
+                            "인프라 담당자 검토가 반영된 엑셀파일을 업로드해 주세요."
                         )
                     )
                 ]
@@ -348,8 +307,8 @@ class CandidateAgent:
                 "messages": [
                     AIMessage(
                         content=(
-                            "확정하지 않았습니다. 추가로 회수할 대상을 지정해 주세요.\n"
-                            "예: 특정 팀, 특정 NW ID, 사용률 임계치 조정 요청"
+                            "알겠습니다. 회수 후보를 다시 추출하겠습니다.\n"
+                            "엑셀파일을 다시 업로드해 주세요."
                         )
                     )
                 ]
@@ -382,6 +341,7 @@ class CandidateAgent:
         if not normalized:
             return False
         if normalized in self._classification_cache:
+            print(f"🧠 cache hit accommodation name='{normalized}' -> {self._classification_cache[normalized]}")
             return self._classification_cache[normalized]
 
         prompt = f"""
@@ -397,6 +357,7 @@ class CandidateAgent:
         except Exception:
             is_excluded = False
         self._classification_cache[normalized] = is_excluded
+        print(f"🧠 classify accommodation name='{normalized}' -> {is_excluded}")
         return is_excluded
 
     def _llm_generate_reason(self, row_context: Dict, excluded: bool) -> str:
@@ -421,6 +382,8 @@ class CandidateAgent:
         usage_threshold: float,
         default_owner_email: str,
     ) -> Dict:
+        print("\n🚀 [FUNC: extract_candidates_from_excel(Candidate)]")
+        print(f"📌 batch_id={extraction_batch_id}, usage_threshold={usage_threshold}")
         wb = load_workbook(filename=BytesIO(file_bytes), data_only=True)
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))
@@ -544,7 +507,7 @@ class CandidateAgent:
                 selected_item
             )
 
-        return {
+        result = {
             "batch_id": extraction_batch_id,
             "usage_threshold": usage_threshold,
             "selected_count": inserted,
@@ -560,6 +523,8 @@ class CandidateAgent:
             "selected_ips": selected_ips,
             "requires_finalize": True,
         }
+        print(f"✅ extract done: selected={inserted}, skipped={skipped}, excluded_by_accommodation={excluded_by_accommodation}")
+        return result
 
     def finalize_candidates_from_excel(
         self,
@@ -569,25 +534,54 @@ class CandidateAgent:
         usage_threshold: float,
         default_owner_email: str,
     ) -> Dict:
-        extracted = self.extract_candidates_from_excel(
-            db=db,
-            file_bytes=file_bytes,
-            extraction_batch_id=extraction_batch_id,
-            usage_threshold=usage_threshold,
-            default_owner_email=default_owner_email,
-        )
+        print("\n🚀 [FUNC: finalize_candidates_from_excel(Candidate)]")
+        print(f"📌 batch_id={extraction_batch_id}")
+        _ = usage_threshold
+        wb = load_workbook(filename=BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            raise ValueError("엑셀 파일이 비어 있습니다.")
+
+        headers = [self._normalize_header(h) for h in rows[0]]
+        header_index = {name: idx for idx, name in enumerate(headers)}
+        missing_headers = [h for h in self.REQUIRED_HEADERS if h not in header_index]
+        if missing_headers:
+            raise ValueError(f"필수 컬럼이 없습니다: {', '.join(missing_headers)}")
+
+        prepared_ips: List[Dict] = []
+        for row in rows[1:]:
+            dhcp_ip = row[header_index["DHCP Server IP"]]
+            ip_block = str(row[header_index["IP블록"]] or "").strip()
+            owner_team = str(row[header_index["인프라팀"]] or "").strip()
+            nw_id = str(row[header_index["네트워크 ID"]] or "").strip()
+            display_ip = ip_block if ip_block else f"{dhcp_ip}/32"
+            if not dhcp_ip or not nw_id or not owner_team:
+                continue
+            prepared_ips.append(
+                {
+                    "nw_id": nw_id,
+                    "ip_address": display_ip,
+                    "owner_team": owner_team,
+                    "owner_email": default_owner_email,
+                }
+            )
+        print(f"📦 prepared_ips from uploaded excel={len(prepared_ips)}")
+
         insert_result = self._insert_confirmed_candidates(
             db=db,
-            selected_ips=extracted.get("selected_ips", []),
+            selected_ips=prepared_ips,
             extraction_batch_id=extraction_batch_id,
         )
-        return {
+        result = {
             "batch_id": extraction_batch_id,
-            "selected_count": extracted.get("selected_count", 0),
-            "excluded_by_accommodation_count": extracted.get("excluded_by_accommodation_count", 0),
+            "selected_count": len(prepared_ips),
+            "excluded_by_accommodation_count": 0,
             "inserted_count": insert_result.get("inserted_count", 0),
             "skipped_count": insert_result.get("skipped_count", 0),
         }
+        print(f"✅ finalize done: {result}")
+        return result
 
     def build_extract_response_message(self, result: Dict) -> str:
         prompt = f"""
@@ -690,7 +684,6 @@ def build_candidate_graph():
     workflow = StateGraph(AgentState)
     workflow.add_node("analyzer", agent.intent_analyzer)
     workflow.add_node("constructor", agent.action_planner)
-    workflow.add_node("fetcher", agent.data_fetcher)
     workflow.add_node("responder", agent.responder)
 
     workflow.set_entry_point("analyzer")
@@ -699,8 +692,6 @@ def build_candidate_graph():
         "constructor",
         lambda x: x.get("query_plan", {}).get("action", "CHAT"),
         {
-            "FETCH_STATUS": "fetcher",
-            "FETCH_CANDIDATES": "fetcher",
             "GUIDE_UPLOAD": "responder",
             "SEND_REVIEW_MAIL": "responder",
             "GUIDE_FINALIZE_UPLOAD": "responder",
@@ -708,7 +699,6 @@ def build_candidate_graph():
             "CHAT": "responder",
         },
     )
-    workflow.add_edge("fetcher", "responder")
     workflow.add_edge("responder", END)
     return workflow.compile()
 
