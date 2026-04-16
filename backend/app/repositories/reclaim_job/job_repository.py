@@ -49,7 +49,7 @@ class JobRepository:
         ).all()
         return {"job_info": latest_job, "items": items}
 
-    def create_reclaim_job(self, main_task_id: str, sub_task_id: str, requester_id: str, selected_ips: list):
+    def create_reclaim_job(self, main_task_id: str, sub_task_id: str, requester_id: str, selected_ips: list, initial_item_status: str = "IN-PROGRESS"):
         try:
             new_job = IpReclaimJob(
                 session_id="POC_SESSION",
@@ -69,7 +69,7 @@ class JobRepository:
                     ip_address=ip_data["ip_address"],
                     owner_team=ip_data["owner_team"],
                     owner_email=ip_data["owner_email"],
-                    item_status="READY"
+                    item_status=initial_item_status
                 )
                 self.db.add(item)
                 candidate = self.db.query(IpReclaimCandidate).get(ip_data["candidate_id"])
@@ -91,6 +91,51 @@ class JobRepository:
             return True
         return False
     
+    def get_active_job(self):
+        """현재 활성 작업(READY, IN-PROGRESS) 조회 - 가장 최근 작업 반환"""
+        return (
+            self.db.query(IpReclaimJob)
+            .filter(IpReclaimJob.job_status.in_(["READY", "IN-PROGRESS"]))
+            .order_by(desc(IpReclaimJob.ip_reclaim_job_id))
+            .first()
+        )
+
+    def get_items_by_job_and_status(self, job_id: int, statuses: List[str]):
+        """특정 잡의 특정 상태 아이템 목록 조회"""
+        return (
+            self.db.query(IpReclaimJobItem)
+            .filter(
+                and_(
+                    IpReclaimJobItem.ip_reclaim_job_id == job_id,
+                    IpReclaimJobItem.item_status.in_(statuses)
+                )
+            )
+            .all()
+        )
+
+    def update_job_status(self, job_id: int, new_status: str):
+        """잡 상태 업데이트"""
+        job = self.db.query(IpReclaimJob).filter(
+            IpReclaimJob.ip_reclaim_job_id == job_id
+        ).first()
+        if job:
+            job.job_status = new_status
+            self.db.commit()
+        return job
+
+    def update_item_status_by_id(self, item_id: int, new_status: str, **extra_fields):
+        """아이템 ID 기반 상태 + 추가 필드 업데이트"""
+        item = self.db.query(IpReclaimJobItem).filter(
+            IpReclaimJobItem.ip_reclaim_job_item_id == item_id
+        ).first()
+        if item:
+            item.item_status = new_status
+            for key, val in extra_fields.items():
+                if hasattr(item, key):
+                    setattr(item, key, val)
+            self.db.commit()
+        return item
+
     def bulk_update_item_status_by_filters(self, filter_list: List[dict], new_status: str):
         """
         [안전장치 강화] 필터가 명확하지 않으면 업데이트를 수행하지 않습니다.

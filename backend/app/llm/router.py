@@ -84,5 +84,5 @@ class MasterOrchestrator:
         
         return workflow.compile()
 
-# 💡 드디어 chat.py에서 기다리던 그 녀석!
+# 드디어 chat.py에서 기다리던 그 녀석!
 master_graph = MasterOrchestrator().build_master_graph()

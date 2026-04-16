@@ -100,3 +100,42 @@ class NtossClient:
             "ip": ip,
             "error_msg": None if is_success else "Device SNMP Response Error"
         }
+
+    @log_ntoss_call
+    def no_action(self, task_id: str, nw_id: str, ip: str) -> dict:
+        """작업없음 처리 API - 해당 IP를 차후 회수 대상으로 관리"""
+        return {
+            "status": "SUCCESS",
+            "task_id": task_id,
+            "nw_id": nw_id,
+            "ip": ip,
+            "message": "작업없음 처리 완료"
+        }
+
+    @log_ntoss_call
+    def allocate_ip(self, sub_task_id: str, ip: str) -> dict:
+        """IP 할당(원복) API - 장비 회수 실패 시 IP 재할당"""
+        return {
+            "status": "SUCCESS",
+            "sub_task_id": sub_task_id,
+            "ip": ip,
+            "message": "IP 할당 완료"
+        }
+
+    @log_ntoss_call
+    def complete_sub_task(self, sub_task_id: str) -> dict:
+        """서브작업 완료 처리 API"""
+        return {
+            "status": "SUCCESS",
+            "sub_task_id": sub_task_id,
+            "message": "서브작업 완료 처리됨"
+        }
+
+    @log_ntoss_call
+    def complete_main_task(self, main_task_id: str) -> dict:
+        """메인작업 완료 처리 API"""
+        return {
+            "status": "SUCCESS",
+            "main_task_id": main_task_id,
+            "message": "메인작업 완료 처리됨"
+        }

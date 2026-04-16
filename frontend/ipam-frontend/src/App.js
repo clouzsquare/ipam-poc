@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { Send, User, Bot, Loader2, CheckCircle2, Paperclip } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function App() {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: '안녕하세요. IPAM 관리 에이전트입니다. 오늘 진행할 IP 회수 작업이 있으신가요?' }
+    { role: 'assistant', content: '안녕하세요. **IPAM AI Assistant**입니다. 오늘 진행할 IP 회수 작업이 있으신가요?' }
   ]);
   
-  // 💡 [핵심] 에이전트가 추출한 데이터와 설정을 프론트에서 들고 있어야 합니다 (Stateless 대응)
   const [selectedIps, setSelectedIps] = useState([]); 
   const [maxPerTeam, setMaxPerTeam] = useState(4);
   const [selectedFileName, setSelectedFileName] = useState('');
@@ -17,7 +18,6 @@ function App() {
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // 새 메시지가 추가될 때마다 하단으로 스크롤
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -37,19 +37,15 @@ function App() {
     setIsLoading(true);
 
     try {
-      // 🚀 백엔드로 history뿐만 아니라 현재 들고 있는 metadata를 함께 전송합니다.
       const response = await axios.post('http://localhost:8000/api/v1/chat', {
         history: updatedMessages,
-        selected_ips: selectedIps, // 이전 대화에서 추출된 IP 리스트
-        max_per_team: maxPerTeam   // 현재 설정된 팀당 제한 개수
+        selected_ips: selectedIps,
+        max_per_team: maxPerTeam
       });
 
-      // 백엔드 응답 구조: { content, selected_ips, max_per_team }
       const { content, selected_ips, max_per_team } = response.data;
 
-      // 💡 응답에 새로운 IP 리스트나 설정값이 오면 업데이트 (다음 turn에 사용됨)
       if (selected_ips) {
-        console.log("Updated Selected IPs:", selected_ips);
         setSelectedIps(selected_ips);
       }
       if (max_per_team) {
@@ -134,13 +130,41 @@ function App() {
                   ? 'bg-blue-500 text-white rounded-tr-none' 
                   : 'bg-[#444654] text-gray-100 rounded-tl-none border border-gray-600'
               }`}>
-                {/* 확정 메시지 등에 포함된 마크다운 느낌을 살리기 위해 whitespace-pre-wrap 유지 */}
-                <p className="whitespace-pre-wrap text-[15px]">{msg.content}</p>
+                {/* 💡 유저는 일반 텍스트, 어시스턴트는 마크다운 렌더링 */}
+                {msg.role === 'user' ? (
+                  <p className="whitespace-pre-wrap text-[15px]">{msg.content}</p>
+                ) : (
+                  <div className="markdown-container text-[15px]">
+                    <ReactMarkdown 
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        // 마크다운 요소별 스타일 커스텀
+                        table: ({node, ...props}) => (
+                          <div className="overflow-x-auto my-3">
+                            <table className="border-collapse border border-gray-500 w-full text-sm" {...props} />
+                          </div>
+                        ),
+                        thead: ({node, ...props}) => <thead className="bg-gray-700" {...props} />,
+                        th: ({node, ...props}) => <th className="border border-gray-500 px-3 py-2 text-left font-bold" {...props} />,
+                        td: ({node, ...props}) => <td className="border border-gray-500 px-3 py-2" {...props} />,
+                        ul: ({node, ...props}) => <ul className="list-disc ml-5 my-2 space-y-1" {...props} />,
+                        ol: ({node, ...props}) => <ol className="list-decimal ml-5 my-2 space-y-1" {...props} />,
+                        li: ({node, ...props}) => <li {...props} />,
+                        strong: ({node, ...props}) => <strong className="text-green-400 font-bold" {...props} />,
+                        p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
+                        code: ({node, inline, ...props}) => (
+                          <code className={`${inline ? 'bg-gray-800 px-1 rounded' : 'block bg-gray-900 p-2 rounded-md my-2'} font-mono text-sm`} {...props} />
+                        )
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
+                )}
                 
-                {/* 작업 확정 시 시각적 표시 예시 (옵션) */}
                 {msg.content.includes("확정되었습니다") && (
-                  <div className="mt-3 flex items-center gap-2 text-green-400 text-sm font-bold">
-                    <CheckCircle2 size={16} /> 작업 등록 완료
+                  <div className="mt-3 flex items-center gap-2 text-green-400 text-sm font-bold border-t border-gray-600 pt-3">
+                    <CheckCircle2 size={16} /> 작업 등록 완료 (NTOSS 연동됨)
                   </div>
                 )}
               </div>

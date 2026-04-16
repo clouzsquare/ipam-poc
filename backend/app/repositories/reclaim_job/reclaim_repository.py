@@ -23,7 +23,6 @@ class ReclaimRepository:
         # DB 드라이버에 따라 더 안전할 수 있습니다.
         filters = [
             IpReclaimCandidate.status == "READY",
-            IpReclaimCandidate.extraction_date == func.curdate()
         ]
         
         if target_team:
