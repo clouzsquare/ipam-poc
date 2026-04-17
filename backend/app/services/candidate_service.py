@@ -16,21 +16,30 @@ from openpyxl import Workbook, load_workbook
 from sqlalchemy.orm import Session
 
 from app.client.ntoss_client import NtossClient
+from app.config.candidate_reclaim_policy import (
+    EXTRACT_RESPONSE_TEMPLATE_FOOTER,
+    MSG_EXCLUDE_DUPLICATE,
+    MSG_EXCLUDE_FALLBACK,
+    RECLAIM_REASON_COLUMN,
+    REQUIRED_EXCEL_HEADERS,
+    active_semantic_exclusion_categories,
+    build_decision_reason_llm_prompt,
+    build_extract_analysis_llm_prompt,
+    build_semantic_exclusion_prompt,
+    exclude_reason_parts,
+    format_semantic_match_labels,
+    get_selection_criteria_summary,
+    is_non_primary_for_reclaim,
+    parse_semantic_exclusion_response,
+    selection_policy_payload,
+    usage_qualifies_for_reclaim,
+)
 from app.repositories.candidate.candidate_repository import CandidateRepository
 
 
 class CandidateService:
-    RECLAIM_REASON_COL = "회수 사유"
-
-    REQUIRED_HEADERS = [
-        "DHCP Server IP",
-        "IP블록",
-        "인프라팀",
-        "네트워크 이름",
-        "네트워크 ID",
-        "Primary 여부",
-        "사용률(%)",
-    ]
+    RECLAIM_REASON_COL = RECLAIM_REASON_COLUMN
+    REQUIRED_HEADERS = REQUIRED_EXCEL_HEADERS
 
     def __init__(self):
         load_dotenv()
@@ -40,7 +49,7 @@ class CandidateService:
             temperature=0,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
-        self._classification_cache: Dict[str, bool] = {}
+        self._classification_cache: Dict[str, Tuple[bool, Tuple[str, ...]]] = {}
 
     @staticmethod
     def _convert_to_messages(messages: List[dict]) -> List[BaseMessage]:
@@ -141,7 +150,7 @@ class CandidateService:
     def _build_review_excel_bytes(selected_ips: List[dict]) -> bytes:
         wb = Workbook()
         ws = wb.active
-        reason_col = CandidateService.RECLAIM_REASON_COL
+        reason_col = RECLAIM_REASON_COLUMN
         with_snap = [x for x in selected_ips if x.get("excel_row")]
         if with_snap:
             hdrs = list(with_snap[0]["excel_row"].keys())
@@ -280,40 +289,27 @@ class CandidateService:
         except ValueError:
             return 0.0
 
-    @staticmethod
-    def _is_non_primary(value) -> bool:
-        return str(value).strip().upper() != "Y" if value is not None else True
-
-    def _is_accommodation_by_llm(self, name: str) -> bool:
+    def _semantic_exclusion_for_name(self, name: str) -> Tuple[bool, Tuple[str, ...]]:
+        """네트워크명·단지명이 정책상 의미 기반 제외 대상인지. (제외 여부, 매칭 카테고리 id)."""
+        if not active_semantic_exclusion_categories():
+            return False, ()
         normalized = (name or "").strip()
         if not normalized:
-            return False
+            return False, ()
         if normalized in self._classification_cache:
             return self._classification_cache[normalized]
 
-        prompt = f"""
-        아래 명칭이 '특정 요일/시점에 사용량이 급증·급감할 수 있는 단기 숙박 시설'인지 분류하세요.
-        단기 숙박 시설 예: 기숙사, 호텔, 숙박업소, 모텔, 리조트, 게스트하우스 등
-        일반 주거 아파트/일반 상업시설은 KEEP으로 분류하세요.
-        명칭: "{normalized}"
-        출력은 EXCLUDE 또는 KEEP 한 단어만 반환하세요.
-        """
+        prompt = build_semantic_exclusion_prompt(normalized)
         try:
             response = self.llm.invoke(prompt)
-            is_excluded = "EXCLUDE" in str(response.content).upper()
+            ex, mids = parse_semantic_exclusion_response(str(response.content))
         except Exception:
-            is_excluded = False
-        self._classification_cache[normalized] = is_excluded
-        return is_excluded
+            ex, mids = False, ()
+        self._classification_cache[normalized] = (ex, mids)
+        return ex, mids
 
     def _llm_generate_reason(self, row_context: Dict, excluded: bool) -> str:
-        prompt = f"""
-        아래 판정 결과를 관리자에게 설명할 한 줄 사유를 작성하세요.
-        - excluded={excluded}
-        - 판정 기준: 사용률 임계치, Primary 여부, 숙소형 시설 제외
-        - 데이터: {row_context}
-        40자 이내 한국어 문장으로 출력하세요.
-        """
+        prompt = build_decision_reason_llm_prompt(row_context, excluded)
         try:
             res = self.llm.invoke(prompt)
             return str(res.content).strip()
@@ -343,7 +339,7 @@ class CandidateService:
 
         inserted = 0
         skipped = 0
-        excluded_by_accommodation = 0
+        excluded_by_semantic = 0
         selected_preview: List[Dict] = []
         excluded_details: List[Dict] = []
         selected_ips: List[Dict] = []
@@ -366,36 +362,43 @@ class CandidateService:
             usage_percent = self._to_percent(usage_raw)
             ntoss_result = self.ntoss.get_apartment_info_by_nw_id(nw_id=nw_id)
             apartment_name = str(ntoss_result.get("apartment_name", "") or "")
-            network_is_accommodation = self._is_accommodation_by_llm(network_name)
-            apartment_is_accommodation = self._is_accommodation_by_llm(apartment_name)
+            net_ex, net_mids = self._semantic_exclusion_for_name(network_name)
+            apt_ex, apt_mids = self._semantic_exclusion_for_name(apartment_name)
+            merged_ids: Tuple[str, ...] = tuple(
+                dict.fromkeys([*list(net_mids), *list(apt_mids)])
+            )
+            semantic_detail = format_semantic_match_labels(merged_ids) if merged_ids else ""
 
             row_context = {
                 "nw_id": nw_id,
                 "ip_address": display_ip,
                 "owner_team": str(owner_team),
                 "usage_percent": usage_percent,
-                "is_non_primary": self._is_non_primary(primary_flag),
+                "is_non_primary": is_non_primary_for_reclaim(primary_flag),
                 "network_name": network_name,
                 "apartment_name": apartment_name,
-                "network_name_is_accommodation": network_is_accommodation,
-                "apartment_name_is_accommodation": apartment_is_accommodation,
+                "network_semantic_exclude": net_ex,
+                "apartment_semantic_exclude": apt_ex,
+                "network_semantic_matches": list(net_mids),
+                "apartment_semantic_matches": list(apt_mids),
             }
-            is_under_threshold = usage_percent < usage_threshold
-            is_non_primary = self._is_non_primary(primary_flag)
-            is_excluded_accommodation = network_is_accommodation or apartment_is_accommodation
-            should_select = is_under_threshold and is_non_primary and (not is_excluded_accommodation)
+            qualifies_usage = usage_qualifies_for_reclaim(usage_percent, usage_threshold)
+            passes_non_primary = is_non_primary_for_reclaim(primary_flag)
+            excluded_by_semantic_name = net_ex or apt_ex
+            should_select = qualifies_usage and passes_non_primary and (not excluded_by_semantic_name)
 
             if not should_select:
                 skipped += 1
-                if is_excluded_accommodation:
-                    excluded_by_accommodation += 1
-                reasons = []
-                if not is_under_threshold:
-                    reasons.append(f"사용률 {usage_percent:.2f}%가 기준({usage_threshold:.2f}%) 미만이 아님")
-                if not is_non_primary:
-                    reasons.append("Primary 여부가 Y이므로 제외")
-                if is_excluded_accommodation:
-                    reasons.append("네트워크명 또는 NTOSS 아파트명이 숙소형 시설로 분류됨")
+                if excluded_by_semantic_name:
+                    excluded_by_semantic += 1
+                reasons = exclude_reason_parts(
+                    qualifies_usage=qualifies_usage,
+                    passes_non_primary=passes_non_primary,
+                    excluded_by_semantic=excluded_by_semantic_name,
+                    semantic_detail=semantic_detail or "의미 기반 제외",
+                    usage_percent=usage_percent,
+                    threshold_percent=usage_threshold,
+                )
                 excluded_details.append(
                     {
                         "nw_id": nw_id,
@@ -404,7 +407,7 @@ class CandidateService:
                         "usage_percent": usage_percent,
                         "network_name": network_name,
                         "apartment_name": apartment_name,
-                        "exclude_reason": " / ".join(reasons) if reasons else "정책 기준 미충족",
+                        "exclude_reason": " / ".join(reasons) if reasons else MSG_EXCLUDE_FALLBACK,
                     }
                 )
                 continue
@@ -420,7 +423,7 @@ class CandidateService:
                         "usage_percent": usage_percent,
                         "network_name": network_name,
                         "apartment_name": apartment_name,
-                        "exclude_reason": "엑셀 내 중복 대상",
+                        "exclude_reason": MSG_EXCLUDE_DUPLICATE,
                     }
                 )
                 continue
@@ -455,12 +458,9 @@ class CandidateService:
             "usage_threshold": usage_threshold,
             "selected_count": inserted,
             "skipped_count": skipped,
-            "excluded_by_accommodation_count": excluded_by_accommodation,
-            "selection_policy": {
-                "usage_threshold_percent": usage_threshold,
-                "non_primary_required": True,
-                "exclude_accommodation": True,
-            },
+            "excluded_by_semantic_count": excluded_by_semantic,
+            "excluded_by_accommodation_count": excluded_by_semantic,
+            "selection_policy": selection_policy_payload(usage_threshold),
             "selected_preview": selected_preview,
             "excluded_details": excluded_details,
             "selected_ips": selected_ips,
@@ -543,39 +543,7 @@ class CandidateService:
         }
 
     def build_extract_response_message(self, result: Dict) -> str:
-        prompt = f"""
-        당신은 IPAM AI Assistant입니다.
-        아래 데이터를 바탕으로 "정해진 양식"으로만 응답하세요.
-
-        [중요 규칙]
-        1) 후보 목록(selected_preview)과 제외 목록(excluded_details)을 절대 요약/생략하지 말고 전부 출력하세요.
-        2) 기준 IP사용률(usage_threshold_percent)을 반드시 명시하세요.
-        3) 제외 목록은 각 항목의 exclude_reason을 그대로 포함하세요.
-        4) 데이터에 없는 내용을 임의로 만들지 마세요.
-        5) 아래 출력 템플릿의 제목/순서를 그대로 지키세요.
-        6) 마지막 안내 문장은 반드시 아래 문장과 100% 동일해야 합니다.
-           후보 확인 후 '메일 발송'이라고 입력하면 검토 메일을 인프라 담당자에게 발송하고, 수정이 필요하다면 수정할 내용을 입력해주세요.
-
-        [출력 템플릿]
-        엑셀 분석 결과 요약
-        - 후보 건수: {{selected_count}}건
-        - 제외 건수: {{skipped_count}}건
-        - 기준 IP사용률: {{usage_threshold_percent}}%
-        - 선정 기준: 사용률 미달 + Non-primary + 단기 숙박 시설 제외
-
-        후보 목록
-        - {{owner_team}} | {{nw_id}} | {{ip_address}} | 사용률 {{usage_percent}}% | 근거: {{decision_reason}}
-        - ... (selected_preview의 모든 항목)
-
-        제외 목록
-        - {{owner_team}} | {{nw_id}} | {{ip_address}} | 사용률 {{usage_percent}}% | 제외 사유: {{exclude_reason}}
-        - ... (excluded_details의 모든 항목)
-
-        후보 확인 후 '메일 발송'이라고 입력하면 검토 메일을 인프라 담당자에게 발송하고, 수정이 필요하다면 수정할 내용을 입력해주세요.
-
-        [입력 데이터]
-        {result}
-        """
+        prompt = build_extract_analysis_llm_prompt(result)
         try:
             res = self.llm.invoke([HumanMessage(content=prompt)])
             return str(res.content).strip()
@@ -589,7 +557,7 @@ class CandidateService:
                 f"- 후보 건수: {result.get('selected_count', 0)}건",
                 f"- 제외 건수: {result.get('skipped_count', 0)}건",
                 f"- 기준 IP사용률: {usage_threshold}%",
-                "- 선정 기준: 사용률 미달 + Non-primary + 단기 숙박 시설 제외",
+                f"- 선정 기준: {get_selection_criteria_summary()}",
                 "",
                 "후보 목록",
             ]
@@ -615,9 +583,7 @@ class CandidateService:
                 lines.append("- 제외 없음")
 
             lines.append("")
-            lines.append(
-                "후보 확인 후 '메일 발송'이라고 입력하면 검토 메일을 인프라 담당자에게 발송하고, 수정이 필요하다면 수정할 내용을 입력해주세요."
-            )
+            lines.append(EXTRACT_RESPONSE_TEMPLATE_FOOTER)
             return "\n".join(lines)
 
     def build_finalize_response_message(self, result: Dict) -> str:
