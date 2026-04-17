@@ -316,6 +316,25 @@ class CandidateService:
         except Exception:
             return "정책 기준에 따라 자동 판정됨"
 
+    @staticmethod
+    def _build_rule_based_reason(row_context: Dict) -> str:
+        """후보 선정 사유를 LLM 없이 정책 데이터로 구성한다."""
+        usage_percent = float(row_context.get("usage_percent", 0.0) or 0.0)
+        parts = [f"사용률 {usage_percent:.2f}%로 기준 미달"]
+
+        if bool(row_context.get("is_non_primary", False)):
+            parts.append("Non-primary")
+
+        network_name = str(row_context.get("network_name", "") or "").strip()
+        if network_name:
+            parts.append(f"네트워크명: {network_name}")
+
+        apartment_name = str(row_context.get("apartment_name", "") or "").strip()
+        if apartment_name:
+            parts.append(f"단지명: {apartment_name}")
+
+        return " / ".join(parts)
+
     def extract_candidates_from_excel(
         self,
         db: Session,
@@ -439,7 +458,7 @@ class CandidateService:
                 "usage_percent": usage_percent,
                 "network_name": network_name,
                 "apartment_name": apartment_name,
-                "decision_reason": self._llm_generate_reason(row_context, excluded=False),
+                "decision_reason": self._build_rule_based_reason(row_context),
             }
             selected_ips.append(
                 {
