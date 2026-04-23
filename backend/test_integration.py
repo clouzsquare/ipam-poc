@@ -2,7 +2,7 @@ import requests
 import json
 import time
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8000/api/v1"
 
 def test_chat_flow():
     print("--- Testing Chat Flow ---")
@@ -35,12 +35,12 @@ def test_scheduled_tasks():
     
     # 1. 11am DHCP Reclaim
     print("Running 11am schedule...")
-    res = requests.post(f"{BASE_URL}/reclaim/schedule/11am").json()
+    res = requests.post(f"{BASE_URL}/scheduler/dhcp").json()
     print("Result:", json.dumps(res, indent=2, ensure_ascii=False))
     
     # 2. 5pm Device Reclaim
     print("\nRunning 5pm schedule...")
-    res = requests.post(f"{BASE_URL}/reclaim/schedule/5pm").json()
+    res = requests.post(f"{BASE_URL}/scheduler/device").json()
     print("Result:", json.dumps(res, indent=2, ensure_ascii=False))
 
 def test_status_query():

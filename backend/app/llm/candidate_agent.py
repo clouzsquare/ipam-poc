@@ -4,9 +4,9 @@ from typing import Annotated, List, TypedDict, Union
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from app.services.candidate_service import CandidateService
+from app.llm.provider import get_provider
 
 
 class AgentState(TypedDict):
@@ -19,11 +19,7 @@ class AgentState(TypedDict):
 class CandidateAgent:
     def __init__(self):
         load_dotenv()
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-        )
+        self.llm = get_provider().as_langchain_chat_model()
         self.candidate_service = CandidateService()
         self.demo_review_recipient = os.getenv("CANDIDATE_DEMO_REVIEW_EMAIL", "").strip()
 

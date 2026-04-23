@@ -6,11 +6,10 @@ import logging
 from typing import TypedDict, List, Annotated, Union
 
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-
 from app.client.ntoss_client import NtossClient
+from app.llm.provider import get_provider
 from app.core.database import SessionLocal
 from app.repositories.reclaim_job.reclaim_repository import ReclaimRepository
 from app.repositories.reclaim_job.job_repository import JobRepository
@@ -33,11 +32,7 @@ class AgentState(TypedDict):
 
 class ReclaimAgent:
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0,
-            google_api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        self.llm = get_provider().as_langchain_chat_model()
         self.ntoss = NtossClient()
 
     def _convert_to_messages(self, messages: List[Union[dict, BaseMessage]]) -> List[BaseMessage]:
