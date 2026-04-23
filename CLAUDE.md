@@ -57,7 +57,7 @@ backend/
 └── main.py               # FastAPI entry point
 
 frontend/
-└── src/App.js            # 채팅 UI
+└── ipam-frontend/   # React frontend (npm install & npm start here)
 ```
 
 ## Commands

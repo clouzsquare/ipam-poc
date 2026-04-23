@@ -16,7 +16,7 @@ import os
 import json
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
-from langchain_core.outputs import ChatResult
+from langchain_core.outputs import ChatResult, ChatGeneration
 from langchain_core.callbacks import CallbackManagerForLLMRun
 
 # ─────────────────────────────────────────────────────────────
@@ -99,6 +99,18 @@ class LLMProvider(ABC):
             @property
             def _default_params(self) -> dict:
                 return {}
+
+            def _generate(self, messages, **kwargs):
+                kwargs.pop("run_manager", None)
+                result = self._provider.invoke(messages, **kwargs)
+                if hasattr(result, "content") and isinstance(result.content, str):
+                    content = result.content
+                elif hasattr(result, "messages") and result.messages:
+                    content = result.messages[0].content
+                else:
+                    content = str(result)
+                from langchain_core.messages import AIMessage
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
 
             def _call(
                 self,
