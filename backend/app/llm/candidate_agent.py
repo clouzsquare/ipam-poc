@@ -4,9 +4,10 @@ from typing import Annotated, List, TypedDict, Union
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
+from app.llm.prompts import CANDIDATE_INTENT_CLASSIFIER
 from app.services.candidate_service import CandidateService
+from app.llm.provider import get_provider
 
 
 class AgentState(TypedDict):
@@ -19,11 +20,7 @@ class AgentState(TypedDict):
 class CandidateAgent:
     def __init__(self):
         load_dotenv()
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-        )
+        self.llm = get_provider().as_langchain_chat_model()
         self.candidate_service = CandidateService()
         self.demo_review_recipient = os.getenv("CANDIDATE_DEMO_REVIEW_EMAIL", "").strip()
 
@@ -41,21 +38,7 @@ class CandidateAgent:
     def intent_analyzer(self, state: AgentState):
         print("\n🚀 [NODE: intent_analyzer(Candidate)]")
         history = self._convert_to_messages(state["messages"])
-        system_prompt = """
-        당신은 IP 회수 후보(CANDIDATE) 시나리오 의도 분류기입니다.
-        아래 6개 intent 중 하나로만 분류하세요.
-        - START: 회수 후보 추출 프로세스 시작
-        - UPLOAD: 엑셀 파일 업로드 감지 (추출/확정 파일 업로드 포함)
-        - SENDMAIL: 추출된 리스트를 바탕으로 담당자에게 Gmail 발송
-        - REJECT: 추출 결과 재실행 요청
-        - FINALIZE: 회수 후보 확정 프로세스 시작
-        - CHAT: 그 외
-
-        출력 규칙:
-        - 반드시 라벨 하나만 출력: START / UPLOAD / SENDMAIL / REJECT / FINALIZE / CHAT
-        - 설명, JSON, 코드블록 없이 한 단어만 출력하세요.
-        """
-        res = self.llm.invoke([SystemMessage(content=system_prompt)] + history)
+        res = self.llm.invoke([SystemMessage(content=CANDIDATE_INTENT_CLASSIFIER)] + history)
         raw = str(res.content).upper()
         intent = next(
             (x for x in ["FINALIZE", "SENDMAIL", "UPLOAD", "REJECT", "START", "CHAT"] if x in raw),

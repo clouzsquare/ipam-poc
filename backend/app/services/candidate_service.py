@@ -11,7 +11,8 @@ from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from app.llm.prompts import CANDIDATE_UPLOAD_MODE_CLASSIFIER
+from app.llm.provider import get_provider
 from openpyxl import Workbook, load_workbook
 from sqlalchemy.orm import Session
 
@@ -44,11 +45,7 @@ class CandidateService:
     def __init__(self):
         load_dotenv()
         self.ntoss = NtossClient()
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-        )
+        self.llm = get_provider().as_langchain_chat_model()
         self._classification_cache: Dict[str, Tuple[bool, Tuple[str, ...]]] = {}
 
     @staticmethod
@@ -67,22 +64,6 @@ class CandidateService:
             return "extract"
         print(f"🎯 분석할 대화 기록(Candidate): {history}")
 
-        system_prompt = """
-        당신은 IP 회수 후보 업로드 모드 판별기입니다.
-        최근 대화 기록을 보고 아래 중 하나로만 분류하세요.
-
-        [모드 종류]
-        - EXTRACT : 후보 추출 단계
-        - FINALIZE: 후보 확정(DB 반영) 단계
-
-        [판단 기준]
-        - 가장 최근에 한 대화에 "확정", "반영" 등 후보 확정과 관련된 단어가 포함되어 있으면 FINALIZE 모드로 판단
-        - 그 외 모든 경우는 EXTRACT 모드로 판단
-
-        [출력 규칙]
-        - 반드시 라벨 하나만 출력: EXTRACT / FINALIZE
-        - 설명 없이 한 단어만 출력
-        """
         try:
             # NOTE:
             # history 자체를 메시지 배열로 그대로 주고 마지막 turn이 AIMessage로 끝나면,
@@ -102,7 +83,7 @@ class CandidateService:
 
             res = self.llm.invoke(
                 [
-                    SystemMessage(content=system_prompt),
+                    SystemMessage(content=CANDIDATE_UPLOAD_MODE_CLASSIFIER),
                     HumanMessage(content=classification_request),
                 ]
             )

@@ -1,17 +1,14 @@
 import os
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from .shared_state import AgentState
 from .reclaim_agent import reclaim_graph     # 동혁님 에이전트
 from .candidate_agent import candidate_graph # 우현님 에이전트
+from .provider import get_provider
 
 class MasterOrchestrator:
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", 
-            temperature=0
-        )
+        self.llm = get_provider().as_langchain_chat_model()
     def route_decision(self, state: AgentState):
         """질문 내용을 보고 도메인을 분류합니다."""
         # 마지막 메시지 추출

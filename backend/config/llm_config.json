@@ -1,0 +1,12 @@
+{
+  "provider": "ollama",
+  "ollama": {
+    "model": "gemma4:e4b",
+    "base_url": "http://localhost:11434",
+    "temperature": 0
+  },
+  "gemini": {
+    "model": "gemini-2.5-flash",
+    "temperature": 0
+  }
+}
