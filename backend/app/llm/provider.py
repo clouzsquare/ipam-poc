@@ -49,7 +49,7 @@ def _resolve_provider_name() -> str:
         return provider
 
     # 2. config/llm_config.json 확인
-    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "llm_config.json")
+    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "llm_config.json")
     if os.path.exists(config_path):
         try:
             with open(config_path) as f:
@@ -88,7 +88,7 @@ class LLMProvider(ABC):
 
     def as_langchain_chat_model(self):
         """LangChain ChatModel 형태로 반환 (호환성)"""
-        from langchain.chat_models.base import SimpleChatModel
+        from langchain_core.language_models import SimpleChatModel
         from pydantic import ValidationError
 
         class WrappedChatModel(SimpleChatModel):
@@ -176,7 +176,7 @@ class OllamaProvider(LLMProvider):
 
     def __init__(
         self,
-        model: str = "gemma4:e2b",
+        model: str = "gemma4:e4b",
         base_url: str = "http://localhost:11434",
         temperature: float = 0,
     ):
@@ -205,7 +205,7 @@ class OllamaProvider(LLMProvider):
         return {
             "LLM_PROVIDER": "ollama",
             "OLLAMA_BASE_URL": "http://localhost:11434 (default)",
-            "OLLAMA_MODEL": "gemma4:e2b (default)",
+            "OLLAMA_MODEL": "gemma4:e4b (default)",
         }
 
 
